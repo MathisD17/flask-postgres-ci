@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build app image
+        run: docker build -t ci-flaskapp .
+
+      - name: Create network
+        run: docker network create ci-net
+
+      - name: Run PostgreSQL (service)
+        run: |
+          docker run -d --name db --network ci-net \
+            -e POSTGRES_USER=admin \
+            -e POSTGRES_PASSWORD=admin123 \
+            -e POSTGRES_DB=testdb \
+            -p 5432:5432 \
+            postgres:14
+          for i in {1..15}; do
+            docker exec db pg_isready -U admin -d testdb && break
+            sleep 2
+          done
+
+      - name: Run app container
+        run: |
+          docker run -d --name app --network ci-net \
+            -e DB_HOST=db \
+            -e DB_USER=admin \
+            -e DB_PASSWORD=admin123 \
+            -e DB_NAME=testdb \
+            -p 5000:5000 \
+            ci-flaskapp
+          sleep 5
+
+      - name: Health check (HTTP)
+        run: curl -fsS http://localhost:5000
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker logs app || true
+          docker logs db || true
+          docker rm -f app db || true
+          docker network rm ci-net || true
